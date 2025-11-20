@@ -89,12 +89,13 @@ function makeAbstractStatue(): Group {
  */
 async function addStatuesAtSectionCenters(scene: Scene, sections: Array<{x0:number;x1:number;z0:number;z1:number}>) {
   const PACKS = [
-    { base: '/models/statues/David/', obj: '12330_Statue_v1_L2.obj', mtl: '12330_Statue_v1_L2.mtl', scale: 0.003 },
-    { base: '/models/statues/Shiva/', obj: '12337_Statue_v1_l1.obj', mtl: '12337_Statue_v1_l1.mtl', scale: 0.001 },
-    { base: '/models/statues/The_Thinker/', obj: '12335_The_Thinker_v3_l2.obj', mtl: '12335_The_Thinker_v3_l2.mtl', scale: 0.002 },
-    { base: '/models/statues/Statue1/', obj: '12328_Statue_v1_L2.obj', mtl: '12328_Statue_v1_L2.mtl', scale: 0.007 },
-    { base: '/models/statues/Statue2/', obj: '12338_Statue_v1_L3.obj', mtl: '12338_Statue_v1_L3.mtl', scale: 0.006 },
-    { base: '/models/statues/EgyptianPharaoh/', obj: '15778_NoveltyBust_EgyptianPharaoh_V1_NEW.obj', mtl: 'blank.mtl', scale: 0.02 },
+    { base: `${BASE}models/statues/David/`, obj: '12330_Statue_v1_L2.obj', mtl: '12330_Statue_v1_L2.mtl', scale: 0.003 },
+    { base: `${BASE}models/statues/Shiva/`, obj: '12337_Statue_v1_l1.obj', mtl: '12337_Statue_v1_l1.mtl', scale: 0.001 },
+    { base: `${BASE}models/statues/The_Thinker/`, obj: '12335_The_Thinker_v3_l2.obj', mtl: '12335_The_Thinker_v3_l2.mtl', scale: 0.002 },
+    { base: `${BASE}models/statues/Statue1/`, obj: '12328_Statue_v1_L2.obj', mtl: '12328_Statue_v1_L2.mtl', scale: 0.007 },
+    { base: `${BASE}models/statues/Statue2/`, obj: '12338_Statue_v1_L3.obj', mtl: '12338_Statue_v1_L3.mtl', scale: 0.006 },
+    { base: `${BASE}models/statues/EgyptianPharaoh/`, obj: '15778_NoveltyBust_EgyptianPharaoh_V1_NEW.obj', mtl: 'blank.mtl', scale: 0.02 },
+    { base: `${BASE}models/statues/god/`, obj: '12334_statue_v1_l3.obj', mtl: '12334_statue_v1_l3.mtl', scale: 0.006 },
   ];
 
   for (let i = 0; i < sections.length; i++) {
