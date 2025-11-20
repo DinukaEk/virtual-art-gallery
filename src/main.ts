@@ -12,8 +12,6 @@ async function fetchMetadata(): Promise<ArtworkMeta[]> {
   return r.ok ? r.json() : [];
 }
 
-const BASE = import.meta.env.BASE_URL;
-
 
 async function start() {
   const canvas = document.getElementById('scene') as HTMLCanvasElement;
