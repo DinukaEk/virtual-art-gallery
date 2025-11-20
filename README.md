@@ -66,15 +66,16 @@ virtual-art-gallery/
 │
 ├── public/
 │ ├── textures/ # floors, walls, decor textures
-│ ├── statues/ # .obj / .mtl / textures
+│ ├── models/
+│ │ └── statues/ # .obj / .mtl / textures
 │ ├── images/ # painting images
-│ └── favicon.svg
+│ └── metadata.json
 │
 ├── src/
 │ ├── main.ts # app entry, renderer, controls
 │ ├── gallery.ts # builds rooms, walls, paintings, statues
 │ ├── frame.ts # painting frame mesh + label text
-│ ├── movement.ts # first-person movement system
+│ ├── controls.ts # first-person movement system
 │ ├── loaders.ts # OBJ/MTL statue loader
 │ └── types.ts # type definitions
 │
@@ -143,7 +144,6 @@ To deploy:
 
 This project is for educational use.
 You may expand or modify it freely.
-(You may add MIT License or school-required license here.)
 
 ---
 
@@ -152,4 +152,3 @@ You may expand or modify it freely.
 Special thanks to:
 - Three.js community
 - Troika Text library developers
-- Original virtual art gallery layout inspiration
