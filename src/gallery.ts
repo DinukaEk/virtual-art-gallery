@@ -87,15 +87,26 @@ function makeAbstractStatue(): Group {
  * Add one statue at the center of each section rectangle.
  * Sections are rectangles we compute from your existing room layout & dividers.
  */
-async function addStatuesAtSectionCenters(scene: Scene, sections: Array<{x0:number;x1:number;z0:number;z1:number}>) {
+/** Proximity record for a statue or artwork — used by controls for plaque & minimap */
+export type ProximityPoint = {
+  x: number; z: number;
+  label: string; sublabel?: string;
+  kind: 'statue' | 'artwork';
+};
+
+async function addStatuesAtSectionCenters(
+  scene: Scene,
+  sections: Array<{x0:number;x1:number;z0:number;z1:number}>,
+  proximityPoints: ProximityPoint[]
+) {
   const PACKS = [
-    { base: `${BASE}models/statues/David/`, obj: '12330_Statue_v1_L2.obj', mtl: '12330_Statue_v1_L2.mtl', scale: 0.003 },
-    { base: `${BASE}models/statues/Shiva/`, obj: '12337_Statue_v1_l1.obj', mtl: '12337_Statue_v1_l1.mtl', scale: 0.001 },
-    { base: `${BASE}models/statues/The_Thinker/`, obj: '12335_The_Thinker_v3_l2.obj', mtl: '12335_The_Thinker_v3_l2.mtl', scale: 0.002 },
-    { base: `${BASE}models/statues/Statue1/`, obj: '12328_Statue_v1_L2.obj', mtl: '12328_Statue_v1_L2.mtl', scale: 0.007 },
-    { base: `${BASE}models/statues/Statue2/`, obj: '12338_Statue_v1_L3.obj', mtl: '12338_Statue_v1_L3.mtl', scale: 0.006 },
-    { base: `${BASE}models/statues/EgyptianPharaoh/`, obj: '15778_NoveltyBust_EgyptianPharaoh_V1_NEW.obj', mtl: 'blank.mtl', scale: 0.02 },
-    { base: `${BASE}models/statues/buddah/`, obj: '12334_statue_v1_l3.obj', mtl: '12334_statue_v1_l3.mtl', scale: 0.002 },
+    { base: `${BASE}models/statues/David/`, obj: '12330_Statue_v1_L2.obj', mtl: '12330_Statue_v1_L2.mtl', scale: 0.003, name: 'David', credit: 'Michelangelo, c. 1504' },
+    { base: `${BASE}models/statues/Shiva/`, obj: '12337_Statue_v1_l1.obj', mtl: '12337_Statue_v1_l1.mtl', scale: 0.001, name: 'Nataraja (Shiva)', credit: 'South Indian, c. 10th century' },
+    { base: `${BASE}models/statues/The_Thinker/`, obj: '12335_The_Thinker_v3_l2.obj', mtl: '12335_The_Thinker_v3_l2.mtl', scale: 0.002, name: 'The Thinker', credit: 'Auguste Rodin, 1904' },
+    { base: `${BASE}models/statues/Statue1/`, obj: '12328_Statue_v1_L2.obj', mtl: '12328_Statue_v1_L2.mtl', scale: 0.007, name: 'Classical Figure', credit: 'Greco-Roman, 2nd century BC' },
+    { base: `${BASE}models/statues/Statue2/`, obj: '12338_Statue_v1_L3.obj', mtl: '12338_Statue_v1_L3.mtl', scale: 0.006, name: 'Draped Figure', credit: 'Hellenistic period' },
+    { base: `${BASE}models/statues/EgyptianPharaoh/`, obj: '15778_NoveltyBust_EgyptianPharaoh_V1_NEW.obj', mtl: 'blank.mtl', scale: 0.02, name: 'Egyptian Pharaoh', credit: 'Ancient Egypt, c. 1350 BC' },
+    { base: `${BASE}models/statues/buddah/`, obj: '12334_statue_v1_l3.obj', mtl: '12334_statue_v1_l3.mtl', scale: 0.002, name: 'Seated Buddha', credit: 'Gandharan, 2nd–3rd century' },
   ];
 
   for (let i = 0; i < sections.length; i++) {
@@ -131,12 +142,69 @@ async function addStatuesAtSectionCenters(scene: Scene, sections: Array<{x0:numb
       statue.position.set(cx, lift, cz);
 
       scene.add(statue);
+
+      // Floating name label above the pedestal
+      addStatueLabel(scene, cx, cz, pack.name, pack.credit);
+
+      // Register for proximity plaque
+      proximityPoints.push({ x: cx, z: cz, label: pack.name, sublabel: pack.credit, kind: 'statue' });
+
     } catch {
       const fallback = makeAbstractStatue();
       fallback.position.set(cx, 0, cz);
       scene.add(fallback);
     }
   }
+}
+
+/** Creates a floating canvas-texture name tag above a pedestal */
+function addStatueLabel(scene: Scene, cx: number, cz: number, name: string, credit: string) {
+  const W = 512, H = 96;
+  const c = document.createElement('canvas');
+  c.width = W; c.height = H;
+  const g = c.getContext('2d')!;
+
+  // pill background
+  g.clearRect(0, 0, W, H);
+  g.fillStyle = 'rgba(12,13,16,0.82)';
+  const r = 18;
+  g.beginPath();
+  g.moveTo(r, 0); g.lineTo(W - r, 0);
+  g.quadraticCurveTo(W, 0, W, r);
+  g.lineTo(W, H - r); g.quadraticCurveTo(W, H, W - r, H);
+  g.lineTo(r, H); g.quadraticCurveTo(0, H, 0, H - r);
+  g.lineTo(0, r); g.quadraticCurveTo(0, 0, r, 0);
+  g.closePath(); g.fill();
+
+  // border
+  g.strokeStyle = 'rgba(255,255,255,0.13)';
+  g.lineWidth = 2;
+  g.stroke();
+
+  // name text
+  g.fillStyle = '#e7e7ea';
+  g.font = 'bold 34px Inter, system-ui, Arial';
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  g.fillText(name, W / 2, H * 0.38);
+
+  // credit text
+  g.fillStyle = '#b7b8bd';
+  g.font = '22px Inter, system-ui, Arial';
+  g.fillText(credit, W / 2, H * 0.72);
+
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = SRGBColorSpace;
+
+  const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false });
+  const geo = new THREE.PlaneGeometry(1.4, 1.4 * (H / W));
+  const mesh = new Mesh(geo, mat);
+
+  // float 0.25m above top of statue bounding box estimate (~2.5m total from ground)
+  mesh.position.set(cx, 2.55, cz);
+  // always face +Z so it's readable from the spawn side; billboard handled in main loop
+  mesh.userData['isBillboard'] = true;
+  scene.add(mesh);
 }
 
 type BuildOpts = { imagesBase: string; artworks: ArtworkMeta[] };
@@ -690,8 +758,11 @@ export function buildGallery(scene: Scene, opts: BuildOpts) {
     { x0: R_WEST.x0, x1: R_WEST.x1, z0: W_MID_Z,   z1: R_WEST.z1 }
   );
 
+  // Proximity points for plaque + minimap (populated by statue loader & frame hangers)
+  const proximityPoints: ProximityPoint[] = [];
+
   // Place statues at those section centers (async, no need to await)
-  void addStatuesAtSectionCenters(scene, sections);
+  void addStatuesAtSectionCenters(scene, sections, proximityPoints);
 
 
   // -----------------------------
@@ -740,6 +811,12 @@ export function buildGallery(scene: Scene, opts: BuildOpts) {
       f.position.set(x, 1.6, z);
       f.rotation.y = (seg.nZ > 0) ? 0 : Math.PI;
       scene.add(f);
+      proximityPoints.push({
+        x, z,
+        label: meta.title || meta.file,
+        sublabel: meta.author,
+        kind: 'artwork',
+      });
     }
   };
 
@@ -773,6 +850,12 @@ export function buildGallery(scene: Scene, opts: BuildOpts) {
       f.position.set(x, 1.6, z);
       f.rotation.y = (seg.nX > 0) ? Math.PI/2 : -Math.PI/2;
       scene.add(f);
+      proximityPoints.push({
+        x, z,
+        label: meta.title || meta.file,
+        sublabel: meta.author,
+        kind: 'artwork',
+      });
     }
   };
 
@@ -796,6 +879,9 @@ export function buildGallery(scene: Scene, opts: BuildOpts) {
 
   const suggestedSpawn = new Vector3((R_ATRIUM.x0+R_ATRIUM.x1)/2 - 6, 1.6, (R_ATRIUM.z0+R_ATRIUM.z1)/2);
 
+  // Room rectangles for minimap rendering
+  const rooms = [R_ATRIUM, R_NORTH, R_EAST, R_WEST];
+
   // Your code adds objects directly to `scene`, so we return an empty Group for API parity.
-  return { root: new Group(), suggestedSpawn, bounds, colliders };
+  return { root: new Group(), suggestedSpawn, bounds, colliders, proximityPoints, rooms };
 }

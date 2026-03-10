@@ -12,7 +12,6 @@ async function fetchMetadata(): Promise<ArtworkMeta[]> {
   return r.ok ? r.json() : [];
 }
 
-
 async function start() {
   const canvas = document.getElementById('scene') as HTMLCanvasElement;
   const renderer = new WebGLRenderer({ canvas, antialias: true });
@@ -29,10 +28,25 @@ async function start() {
 
   const artworks = await fetchMetadata();
   const imagesBase = `${import.meta.env.BASE_URL}images`;
-  const { root, suggestedSpawn, bounds, colliders } = buildGallery(scene, { imagesBase, artworks });
+  const { root, suggestedSpawn, bounds, colliders, proximityPoints, rooms } =
+    buildGallery(scene, { imagesBase, artworks });
   camera.position.copy(suggestedSpawn);
 
-  const { update, setBounds, setColliders } = createControls(camera, renderer.domElement, bounds, colliders);
+  // Collect billboard meshes (statue name labels that should face the camera)
+  const billboards: import('three').Object3D[] = [];
+  scene.traverse((obj) => {
+    if (obj.userData['isBillboard']) billboards.push(obj);
+  });
+
+  const { update, setBounds, setColliders } = createControls(
+    camera,
+    renderer.domElement,
+    bounds,
+    colliders,
+    proximityPoints,
+    rooms,
+    billboards
+  );
   setBounds(bounds);
   setColliders(colliders);
 
@@ -43,8 +57,8 @@ async function start() {
   });
 
   let last = performance.now();
-  const loop = (now:number) => {
-    const dt = Math.min((now - last)/1000, 0.05); last = now;
+  const loop = (now: number) => {
+    const dt = Math.min((now - last) / 1000, 0.05); last = now;
     update(dt);
     renderer.render(scene, camera);
     requestAnimationFrame(loop);
