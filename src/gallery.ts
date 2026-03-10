@@ -5,7 +5,8 @@ import {
   FogExp2, TextureLoader, RepeatWrapping, SRGBColorSpace,
   BoxGeometry, PlaneGeometry, DoubleSide,
   SphereGeometry, CylinderGeometry,
-  Box3, Quaternion, SpotLight, PointLight
+  Box3, Quaternion, SpotLight, PointLight,
+  InstancedMesh, Matrix4, NearestMipmapLinearFilter, LinearMipmapLinearFilter
 } from 'three';
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 import { MTLLoader } from 'three/examples/jsm/loaders/MTLLoader.js';
@@ -97,8 +98,29 @@ export type ProximityPoint = {
 async function addStatuesAtSectionCenters(
   scene: Scene,
   sections: Array<{x0:number;x1:number;z0:number;z1:number}>,
-  proximityPoints: ProximityPoint[]
+  proximityPoints: ProximityPoint[],
+  statueLights: SpotLight[]
 ) {
+  // ── Statue loading progress bar ───────────────────────────────────────────
+  const total = sections.length;
+  let loaded = 0;
+
+  const bar = document.createElement('div');
+  Object.assign(bar.style, {
+    position: 'fixed', bottom: '0', left: '0', width: '0%', height: '3px',
+    background: 'linear-gradient(90deg, #5ab0ff, #a78bfa)',
+    zIndex: '99998', transition: 'width 0.3s ease', pointerEvents: 'none',
+    boxShadow: '0 0 8px rgba(90,176,255,0.6)',
+  });
+  document.body.appendChild(bar);
+
+  const tick = () => {
+    loaded++;
+    bar.style.width = `${Math.round((loaded / total) * 100)}%`;
+    if (loaded >= total) {
+      setTimeout(() => { bar.style.opacity = '0'; setTimeout(() => bar.remove(), 400); }, 300);
+    }
+  };
   const PACKS = [
     { base: `${BASE}models/statues/David/`, obj: '12330_Statue_v1_L2.obj', mtl: '12330_Statue_v1_L2.mtl', scale: 0.003, name: 'David', credit: 'Michelangelo, c. 1504' },
     { base: `${BASE}models/statues/Shiva/`, obj: '12337_Statue_v1_l1.obj', mtl: '12337_Statue_v1_l1.mtl', scale: 0.001, name: 'Nataraja (Shiva)', credit: 'South Indian, c. 10th century' },
@@ -142,6 +164,15 @@ async function addStatuesAtSectionCenters(
       statue.position.set(cx, lift, cz);
 
       scene.add(statue);
+      tick();
+
+      // Spotlight aimed down at this statue — off in day mode, lit at night
+      const statueSpot = new SpotLight(0xd0e8ff, 0.0, 7.0, Math.PI / 7, 0.5, 1.8);
+      statueSpot.position.set(cx, 3.4, cz);
+      statueSpot.target.position.set(cx, 0.8, cz);
+      statueSpot.castShadow = false;
+      scene.add(statueSpot, statueSpot.target);
+      statueLights.push(statueSpot);
 
       // Floating name label above the pedestal
       addStatueLabel(scene, cx, cz, pack.name, pack.credit);
@@ -153,6 +184,7 @@ async function addStatuesAtSectionCenters(
       const fallback = makeAbstractStatue();
       fallback.position.set(cx, 0, cz);
       scene.add(fallback);
+      tick();
     }
   }
 }
@@ -207,7 +239,7 @@ function addStatueLabel(scene: Scene, cx: number, cz: number, name: string, cred
   scene.add(mesh);
 }
 
-type BuildOpts = { imagesBase: string; artworks: ArtworkMeta[] };
+type BuildOpts = { imagesBase: string; artworks: ArtworkMeta[]; renderer?: THREE.WebGLRenderer };
 
 /** a straight wall segment we can hang to */
 type WallSeg =
@@ -253,16 +285,23 @@ export function buildGallery(scene: Scene, opts: BuildOpts) {
   // -----------------------------
   const tex = new TextureLoader();
 
+  // Max anisotropy for sharp textures at grazing angles (floors, walls)
+  const maxAniso = opts.renderer?.capabilities.getMaxAnisotropy() ?? 4;
+
   const floorTex =
     tex.load(`${BASE}textures/floor.jpg`, undefined, undefined, () => tex.load(`${BASE}textures/floor.png`));
   floorTex.wrapS = floorTex.wrapT = RepeatWrapping;
   floorTex.colorSpace = SRGBColorSpace;
+  floorTex.minFilter = LinearMipmapLinearFilter;  // trilinear — sharpest mipmapping
+  floorTex.anisotropy = maxAniso;
   floorTex.repeat.set(Math.ceil(SIZE_X / 4), Math.ceil(SIZE_Z / 4));
 
   const wallTex =
     tex.load(`${BASE}textures/wall.jpg`, undefined, undefined, () => tex.load(`${BASE}textures/wall.png`));
   wallTex.wrapS = wallTex.wrapT = RepeatWrapping;
   wallTex.colorSpace = SRGBColorSpace;
+  wallTex.minFilter = LinearMipmapLinearFilter;
+  wallTex.anisotropy = maxAniso;
   wallTex.repeat.set(2, 1);
 
   const floorMat = new MeshStandardMaterial({ map: floorTex, roughness: 0.35, metalness: 0.08 });
@@ -298,28 +337,47 @@ export function buildGallery(scene: Scene, opts: BuildOpts) {
   type SegX = Extract<WallSeg,{kind:'X'}>;
   type SegZ = Extract<WallSeg,{kind:'Z'}>;
 
+  // Collect all repeated geometry transforms; flush to InstancedMesh after scene is built.
+  const cofferBeamInstances: Array<{px:number;py:number;pz:number;sx:number;sy:number;sz:number}> = [];
+  // Collect trim transforms; flush to InstancedMesh after all walls are built.
+  // Each entry: { px, py, pz, sx, sy, sz } — position + scale (rotation always 0)
+  const trimInstances:  Array<{px:number;py:number;pz:number;sx:number;sy:number;sz:number}> = [];
+  const railInstances:  Array<{px:number;py:number;pz:number;sx:number;sy:number;sz:number}> = [];
+  const sconceInstances:Array<{px:number;py:number;pz:number;sx:number;sy:number;sz:number}> = [];
+
   function addTrimForSegX(seg: SegX) {
-    const len = seg.x1 - seg.x0
-    // baseboard
-    const base = new Mesh(new BoxGeometry(len, BASEBOARD_H, BASEBOARD_T), trimMat)
-    base.position.set((seg.x0+seg.x1)/2, BASEBOARD_H/2, seg.z + (seg.nZ>0 ? BASEBOARD_T/2 : -BASEBOARD_T/2))
-    scene.add(base)
-    // picture rail
-    const rail = new Mesh(new BoxGeometry(len, RAIL_W, RAIL_T), railMat)
-    rail.position.set((seg.x0+seg.x1)/2, RAIL_H, seg.z + (seg.nZ>0 ? RAIL_T/2 : -RAIL_T/2))
-    scene.add(rail)
+    const len = seg.x1 - seg.x0;
+    const cx  = (seg.x0+seg.x1)/2;
+    trimInstances.push({ px: cx, py: BASEBOARD_H/2,  pz: seg.z + (seg.nZ>0?BASEBOARD_T/2:-BASEBOARD_T/2), sx: len, sy: BASEBOARD_H, sz: BASEBOARD_T });
+    railInstances.push({ px: cx, py: RAIL_H,          pz: seg.z + (seg.nZ>0?RAIL_T/2:-RAIL_T/2),           sx: len, sy: RAIL_W,      sz: RAIL_T      });
   }
 
   function addTrimForSegZ(seg: SegZ) {
-    const len = seg.z1 - seg.z0
-    // baseboard
-    const base = new Mesh(new BoxGeometry(BASEBOARD_T, BASEBOARD_H, len), trimMat)
-    base.position.set(seg.x + (seg.nX>0 ? BASEBOARD_T/2 : -BASEBOARD_T/2), BASEBOARD_H/2, (seg.z0+seg.z1)/2)
-    scene.add(base)
-    // picture rail
-    const rail = new Mesh(new BoxGeometry(RAIL_T, RAIL_W, len), railMat)
-    rail.position.set(seg.x + (seg.nX>0 ? RAIL_T/2 : -RAIL_T/2), RAIL_H, (seg.z0+seg.z1)/2)
-    scene.add(rail)
+    const len = seg.z1 - seg.z0;
+    const cz  = (seg.z0+seg.z1)/2;
+    trimInstances.push({ px: seg.x + (seg.nX>0?BASEBOARD_T/2:-BASEBOARD_T/2), py: BASEBOARD_H/2, pz: cz, sx: BASEBOARD_T, sy: BASEBOARD_H, sz: len });
+    railInstances.push({ px: seg.x + (seg.nX>0?RAIL_T/2:-RAIL_T/2),           py: RAIL_H,        pz: cz, sx: RAIL_T,      sy: RAIL_W,      sz: len });
+  }
+
+  /** Build one InstancedMesh from a list of axis-aligned box transforms */
+  function flushBoxInstances(
+    instances: Array<{px:number;py:number;pz:number;sx:number;sy:number;sz:number}>,
+    mat: THREE.Material
+  ) {
+    if (instances.length === 0) return;
+    // Use a 1×1×1 box; scale each instance to the right size via matrix
+    const geo  = new BoxGeometry(1, 1, 1);
+    const mesh = new InstancedMesh(geo, mat, instances.length);
+    mesh.castShadow   = false;
+    mesh.receiveShadow = false;
+    const m = new Matrix4();
+    instances.forEach((inst, i) => {
+      m.makeScale(inst.sx, inst.sy, inst.sz);
+      m.setPosition(inst.px, inst.py, inst.pz);
+      mesh.setMatrixAt(i, m);
+    });
+    mesh.instanceMatrix.needsUpdate = true;
+    scene.add(mesh);
   }
 
   function addSconcesForSegX(seg: SegX) {
@@ -330,13 +388,10 @@ export function buildGallery(scene: Scene, opts: BuildOpts) {
       const t = (count===1)?0.5:(i+1)/(count+1)
       const x = seg.x0 + t*len
       const z = seg.z + (seg.nZ>0 ? SCONCE_OFF : -SCONCE_OFF)
-      const back = new Mesh(new BoxGeometry(0.18,0.28,0.06), sconceMat)
-      back.position.set(x, 2.05, z)
-      scene.add(back)
-      const lamp = new SpotLight(0xffffff, 0.35, 5.5, Math.PI/6, 0.35)
-      lamp.position.set(x, 2.05, seg.z + (seg.nZ>0 ? 0.25 : -0.25))
-      lamp.target.position.set(x, 1.4, seg.z + (seg.nZ>0 ? -0.2 : 0.2)) // washes the wall
-      scene.add(lamp, lamp.target)
+      sconceInstances.push({ px: x, py: 2.05, pz: z, sx: 0.18, sy: 0.28, sz: 0.06 });
+      const lamp = new PointLight(0xfff5e0, 0.5, 6.0, 2.0)
+      lamp.position.set(x, 2.1, seg.z + (seg.nZ>0 ? 0.15 : -0.15))
+      scene.add(lamp)
     }
   }
 
@@ -348,13 +403,10 @@ export function buildGallery(scene: Scene, opts: BuildOpts) {
       const t = (count===1)?0.5:(i+1)/(count+1)
       const z = seg.z0 + t*len
       const x = seg.x + (seg.nX>0 ? SCONCE_OFF : -SCONCE_OFF)
-      const back = new Mesh(new BoxGeometry(0.06,0.28,0.18), sconceMat)
-      back.position.set(x, 2.05, z)
-      scene.add(back)
-      const lamp = new SpotLight(0xffffff, 0.35, 5.5, Math.PI/6, 0.35)
-      lamp.position.set(seg.x + (seg.nX>0 ? 0.25 : -0.25), 2.05, z)
-      lamp.target.position.set(seg.x + (seg.nX>0 ? -0.2 : 0.2), 1.4, z)
-      scene.add(lamp, lamp.target)
+      sconceInstances.push({ px: x, py: 2.05, pz: z, sx: 0.06, sy: 0.28, sz: 0.18 });
+      const lamp = new PointLight(0xfff5e0, 0.5, 6.0, 2.0)
+      lamp.position.set(seg.x + (seg.nX>0 ? 0.15 : -0.15), 2.1, z)
+      scene.add(lamp)
     }
   }
 
@@ -375,25 +427,18 @@ export function buildGallery(scene: Scene, opts: BuildOpts) {
         const cx = (x0+x1)/2, cz=(z0+z1)/2
         const w = x1-x0, d = z1-z0
 
-        // border frame (four slim beams)
-        const bx1 = new Mesh(new BoxGeometry(w, beamT, beamT), cofferMat)
-        bx1.position.set(cx, H - beamT/2, z0)
-        const bx2 = bx1.clone(); bx2.position.set(cx, H - beamT/2, z1)
-        const bz1 = new Mesh(new BoxGeometry(beamT, beamT, d), cofferMat)
-        bz1.position.set(x0, H - beamT/2, cz)
-        const bz2 = bz1.clone(); bz2.position.set(x1, H - beamT/2, cz)
-        scene.add(bx1,bx2,bz1,bz2)
-
-        // inset panel (slightly lower)
+        // Collect coffer beam instances instead of individual Meshes
+        cofferBeamInstances.push(
+          { px: cx, py: H - beamT/2, pz: z0, sx: w,     sy: beamT, sz: beamT },
+          { px: cx, py: H - beamT/2, pz: z1, sx: w,     sy: beamT, sz: beamT },
+          { px: x0, py: H - beamT/2, pz: cz, sx: beamT, sy: beamT, sz: d     },
+          { px: x1, py: H - beamT/2, pz: cz, sx: beamT, sy: beamT, sz: d     }
+        );
+        // inset panel (one mesh per panel is fine — PlaneGeometry is very cheap)
         const inset = new Mesh(new PlaneGeometry(w-0.06, d-0.06), cofferInsetMat)
         inset.rotation.x = Math.PI/2
         inset.position.set(cx, H - 0.09, cz)
         scene.add(inset)
-
-        // soft fill light (very subtle)
-        const light = new PointLight(0xffffff, 0.06, Math.max(w,d)*2)
-        light.position.set(cx, H - 0.25, cz)
-        scene.add(light)
       }
     }
   }
@@ -403,8 +448,9 @@ export function buildGallery(scene: Scene, opts: BuildOpts) {
    *  axis: 'X'  → wall runs along X (faces +/-Z)
    *        'Z'  → wall runs along Z (faces +/-X)
    */
+  // addWallStrips: feeds instance arrays instead of creating individual Meshes
   function addWallStrips(
-    scene: THREE.Scene,
+    _scene: THREE.Scene,
     axis: 'X' | 'Z',
     len: number,
     faceNormal: 1 | -1,
@@ -412,35 +458,28 @@ export function buildGallery(scene: Scene, opts: BuildOpts) {
     H: number,
     WALL_T: number
   ) {
-    // visual sizes (kept very thin so they never collide with player or frames)
-    const stripH  = 0.06;           // strip height
-    const protrude = 0.012;         // 1.2 cm proud of wall plane (<< WALL_GAP)
-    const yPicture = H - 0.22;      // picture rail just below ceiling
-    const yChair   = 1.10;          // chair rail height
+    const stripH   = 0.06;
+    const protrude = 0.012;
+    const yPicture = H - 0.22;
+    const yChair   = 1.10;
 
-    const mkStrip = (y:number, mat:THREE.Material) => {
-      let geo: THREE.BoxGeometry;
+    const pushStrip = (
+      y: number,
+      arr: Array<{px:number;py:number;pz:number;sx:number;sy:number;sz:number}>
+    ) => {
       if (axis === 'X') {
-        geo = new THREE.BoxGeometry(len, stripH, WALL_T + protrude*2);
+        arr.push({ px: center.x, py: y,
+          pz: center.z + faceNormal * (WALL_T/2 + protrude/2),
+          sx: len, sy: stripH, sz: WALL_T + protrude*2 });
       } else {
-        geo = new THREE.BoxGeometry(WALL_T + protrude*2, stripH, len);
+        arr.push({ px: center.x + faceNormal * (WALL_T/2 + protrude/2), py: y,
+          pz: center.z,
+          sx: WALL_T + protrude*2, sy: stripH, sz: len });
       }
-      const mesh = new THREE.Mesh(geo, mat);
-      mesh.castShadow = false;
-      mesh.receiveShadow = false;
-
-      // place the strip so it sits just slightly toward the room (avoid z-fighting)
-      if (axis === 'X') {
-        mesh.position.set(center.x, y, center.z + faceNormal * (WALL_T/2 + protrude/2));
-      } else {
-        mesh.position.set(center.x + faceNormal * (WALL_T/2 + protrude/2), y, center.z);
-      }
-      scene.add(mesh);
     };
 
-    // Light/bright crown-like strip near top, darker chair rail mid-height
-    mkStrip(yPicture, trimMat);
-    mkStrip(yChair,   railMat);
+    pushStrip(yPicture, trimInstances);
+    pushStrip(yChair,   railInstances);
   }
 
   // -----------------------------
@@ -549,121 +588,6 @@ export function buildGallery(scene: Scene, opts: BuildOpts) {
     scene.add(c);
   };
 
-  // --- helpers for statues (place near other helpers in gallery.ts) ---
-  function addPlinthAndStatue(
-    scene: Scene,
-    colliders: RectXZ[],
-    x: number,
-    z: number,
-    variant: number,
-    H: number
-  ) {
-    // dimensions
-    const PLINTH_W = 0.7;
-    const PLINTH_H = 0.8;
-
-    // pedestal
-    const plinthGeo = new BoxGeometry(PLINTH_W, PLINTH_H, PLINTH_W);
-    const plinthMat = new MeshStandardMaterial({ color: 0xf2f2f2, roughness: 0.9, metalness: 0.0 });
-    const plinth = new Mesh(plinthGeo, plinthMat);
-    plinth.position.set(x, PLINTH_H / 2, z);
-    plinth.castShadow = true;
-    plinth.receiveShadow = true;
-    scene.add(plinth);
-
-    // collider so player can’t pass through the plinth
-    colliders.push({
-      minX: x - PLINTH_W / 2,
-      maxX: x + PLINTH_W / 2,
-      minZ: z - PLINTH_W / 2,
-      maxZ: z + PLINTH_W / 2,
-    });
-
-    for (const seg of segs) {
-      if (seg.kind === 'X') { addTrimForSegX(seg as SegX); addSconcesForSegX(seg as SegX); }
-      else                  { addTrimForSegZ(seg as SegZ); addSconcesForSegZ(seg as SegZ); }
-    }
-
-
-    // statue material (warm marble)
-    const marble = new MeshStandardMaterial({ color: 0xeeeeee, roughness: 0.4, metalness: 0.02 });
-
-    // build a few “ancient bust” variants (pure primitives, no textures)
-    const group = new Group();
-    group.position.set(x, PLINTH_H, z);
-
-    const addPart = (m: Mesh) => {
-      m.castShadow = true;
-      m.receiveShadow = false;
-      group.add(m);
-    };
-
-    switch (variant % 4) {
-      case 0: {
-        // Stylized torso + neck + head
-        const torso = new Mesh(new CylinderGeometry(0.22, 0.32, 0.42, 20), marble);
-        torso.position.y = 0.21;
-        addPart(torso);
-
-        const neck = new Mesh(new CylinderGeometry(0.10, 0.12, 0.10, 16), marble);
-        neck.position.y = 0.47;
-        addPart(neck);
-
-        const head = new Mesh(new SphereGeometry(0.18, 24, 16), marble);
-        head.position.y = 0.67;
-        addPart(head);
-        break;
-      }
-      case 1: {
-        // Abstract stacked forms
-        const base = new Mesh(new BoxGeometry(0.36, 0.22, 0.24), marble);
-        base.position.y = 0.11;
-        addPart(base);
-
-        const mid = new Mesh(new CylinderGeometry(0.18, 0.18, 0.22, 22), marble);
-        mid.position.y = 0.33;
-        addPart(mid);
-
-        const top = new Mesh(new SphereGeometry(0.16, 24, 16), marble);
-        top.position.y = 0.54;
-        addPart(top);
-        break;
-      }
-      case 2: {
-        // Column fragment + relief
-        const col = new Mesh(new CylinderGeometry(0.16, 0.16, 0.5, 24), marble);
-        col.position.y = 0.25;
-        addPart(col);
-
-        const cap = new Mesh(new CylinderGeometry(0.20, 0.20, 0.06, 24), marble);
-        cap.position.y = 0.53;
-        addPart(cap);
-
-        const disk = new Mesh(new CylinderGeometry(0.15, 0.15, 0.04, 24), marble);
-        disk.rotation.x = Math.PI / 2;
-        disk.position.y = 0.62;
-        addPart(disk);
-        break;
-      }
-      default: {
-        // Minimal bust
-        const chest = new Mesh(new BoxGeometry(0.32, 0.24, 0.18), marble);
-        chest.position.y = 0.12;
-        addPart(chest);
-
-        const neck = new Mesh(new CylinderGeometry(0.10, 0.10, 0.10, 16), marble);
-        neck.position.y = 0.28;
-        addPart(neck);
-
-        const head = new Mesh(new SphereGeometry(0.16, 24, 16), marble);
-        head.position.y = 0.46;
-        addPart(head);
-        break;
-      }
-    }
-
-    scene.add(group);
-  }
 
   // -----------------------------
   // Build rooms with doorways and dividers
@@ -761,12 +685,15 @@ export function buildGallery(scene: Scene, opts: BuildOpts) {
   // Proximity points for plaque + minimap (populated by statue loader & frame hangers)
   const proximityPoints: ProximityPoint[] = [];
 
+  // Statue spotlights — collected here so main.ts can lerp them for day/night
+  const statueLights: SpotLight[] = [];
+
   // Place statues at those section centers (async, no need to await)
-  void addStatuesAtSectionCenters(scene, sections, proximityPoints);
+  void addStatuesAtSectionCenters(scene, sections, proximityPoints, statueLights);
 
 
   // -----------------------------
-  // Lighting (brighter for PBR)
+  // Lighting (day mode defaults)
   // -----------------------------
   const amb  = new AmbientLight(0xffffff, 0.65);
   const hemi = new HemisphereLight(0xffffff, 0xd1d5db, 0.85);
@@ -774,6 +701,27 @@ export function buildGallery(scene: Scene, opts: BuildOpts) {
   sun.position.set(6, H, 2);
   sun.castShadow = true;
   scene.add(amb, hemi, sun, sun.target);
+
+  // 4 warm painting-wash PointLights — one per room, at picture-rail height.
+  // Covers all frames in a room without needing one light per frame.
+  // Intensity 0 in day (ambient is enough), ramped up in night mode.
+  const roomCentres = [
+    { x: (R_ATRIUM.x0+R_ATRIUM.x1)/2, z: (R_ATRIUM.z0+R_ATRIUM.z1)/2 },
+    { x: (R_NORTH.x0 +R_NORTH.x1) /2, z: (R_NORTH.z0 +R_NORTH.z1) /2 },
+    { x: (R_EAST.x0  +R_EAST.x1)  /2, z: (R_EAST.z0  +R_EAST.z1)  /2 },
+    { x: (R_WEST.x0  +R_WEST.x1)  /2, z: (R_WEST.z0  +R_WEST.z1)  /2 },
+  ];
+  const pictureWashLights: PointLight[] = roomCentres.map(rc => {
+    const pl = new PointLight(0xfff0cc, 0.0, 28, 1.5);
+    pl.position.set(rc.x, 2.2, rc.z);
+    scene.add(pl);
+    return pl;
+  });
+
+  // Single warm candle-tone fill for night atmosphere
+  const nightFill = new PointLight(0xff9944, 0.0, 60);
+  nightFill.position.set(0, H * 0.6, 0);
+  scene.add(nightFill);
 
   // -----------------------------
   // Painting placement (fills every wall segment)
@@ -811,6 +759,7 @@ export function buildGallery(scene: Scene, opts: BuildOpts) {
       f.position.set(x, 1.6, z);
       f.rotation.y = (seg.nZ > 0) ? 0 : Math.PI;
       scene.add(f);
+
       proximityPoints.push({
         x, z,
         label: meta.title || meta.file,
@@ -850,6 +799,7 @@ export function buildGallery(scene: Scene, opts: BuildOpts) {
       f.position.set(x, 1.6, z);
       f.rotation.y = (seg.nX > 0) ? Math.PI/2 : -Math.PI/2;
       scene.add(f);
+
       proximityPoints.push({
         x, z,
         label: meta.title || meta.file,
@@ -879,9 +829,23 @@ export function buildGallery(scene: Scene, opts: BuildOpts) {
 
   const suggestedSpawn = new Vector3((R_ATRIUM.x0+R_ATRIUM.x1)/2 - 6, 1.6, (R_ATRIUM.z0+R_ATRIUM.z1)/2);
 
+  // ── Flush all instanced geometry (trim, rails, sconce backs, coffer beams) ──
+  // All walls, ceilings and trim loops are finished — build the InstancedMeshes now.
+  for (const seg of segs) {
+    if (seg.kind === 'X') { addTrimForSegX(seg as SegX); addSconcesForSegX(seg as SegX); }
+    else                  { addTrimForSegZ(seg as SegZ); addSconcesForSegZ(seg as SegZ); }
+  }
+  flushBoxInstances(trimInstances,        trimMat);
+  flushBoxInstances(railInstances,        railMat);
+  flushBoxInstances(sconceInstances,      sconceMat);
+  flushBoxInstances(cofferBeamInstances,  cofferMat);
+
   // Room rectangles for minimap rendering
   const rooms = [R_ATRIUM, R_NORTH, R_EAST, R_WEST];
 
+  // Expose lighting + scene refs so main.ts can drive the day/night toggle
+  const lightingRefs = { scene, amb, hemi, sun, nightFill, statueLights, pictureWashLights };
+
   // Your code adds objects directly to `scene`, so we return an empty Group for API parity.
-  return { root: new Group(), suggestedSpawn, bounds, colliders, proximityPoints, rooms };
+  return { root: new Group(), suggestedSpawn, bounds, colliders, proximityPoints, rooms, lightingRefs };
 }
