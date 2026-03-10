@@ -113,37 +113,23 @@ async function addStatuesAtSectionCenters(scene: Scene, sections: Array<{x0:numb
 
     try {
       const statue = await loadStatueOBJ(pack.base, pack.obj, pack.mtl);
-      
-      // 0) start from a clean orientation
+
+      // 1) Reset to clean orientation and apply scale
       statue.rotation.set(0, 0, 0);
-
-      // 1) measure current extents to see which axis is the long one
-      const bbox0 = new Box3().setFromObject(statue);
-      const size0 = new Vector3();
-      bbox0.getSize(size0);
-
-      // 2) rotate that long axis to +Y:
-      //    - if X is longest, it's “lying along X”: rotate +90° around Z
-      //    - if Z is longest, it's “lying along Z”: rotate -90° around X
-      //    - if Y is already longest, do nothing
-      if (size0.x >= size0.y && size0.x >= size0.z) {
-        statue.rotateZ(Math.PI / 2);
-      } else if (size0.z >= size0.x && size0.z >= size0.y) {
-        statue.rotateX(-Math.PI / 2);
-      }
-
-      // 3) scale, then seat the base on the pedestal top (y=0.8)
       statue.scale.setScalar(pack.scale);
       statue.updateMatrixWorld(true);
 
+      // 2) These OBJ models are exported Z-up (lying on their back at rest).
+      //    Rotating -90deg around X brings the model +Z axis (its up) to world +Y,
+      //    making every statue stand perfectly upright on the pedestal.
+      statue.rotation.x = -Math.PI / 2;
+      statue.updateMatrixWorld(true);
+
+      // 3) Seat the base flush on top of the pedestal (pedestal top = y 0.8)
       const bbox = new Box3().setFromObject(statue);
-      const lift = 0.8 - bbox.min.y; // 0.8 = pedestal top in your scene
+      const lift = 0.8 - bbox.min.y;
       statue.position.set(cx, lift, cz);
 
-      // 4) (optional) small yaw only, to avoid leaning
-      statue.rotation.y = (i % 2 === 0) ? Math.PI * 0.2 : -Math.PI * 0.2;
-
-      // finally:
       scene.add(statue);
     } catch {
       const fallback = makeAbstractStatue();
